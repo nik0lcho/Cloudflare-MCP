@@ -152,7 +152,7 @@ async function handleJsonRpc(body, env) {
         version: "0.1.0",
       },
       instructions:
-        "This server exposes tools for listing and reading files from an R2 bucket and performing semantic search over a Cloudflare Vectorize index.",
+        "This server exposes tools for listing and reading files from an R2 bucket and performing semantic search over a Cloudflare Vectorize index and AI Search instance.",
     };
 
     return jsonRpcResult(id, result, 200);
@@ -205,6 +205,26 @@ async function handleJsonRpc(body, env) {
               topK: {
                 type: "number",
                 description: "Number of top results to return (default: 5).",
+              },
+            },
+            required: ["query"],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: "ai_search_search",
+          description:
+            "Use Cloudflare AI Search to retrieve relevant chunks for a query. The client (agent) will read these chunks and generate the answer.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              query: {
+                type: "string",
+                description: "Natural language question to search over your knowledge base.",
+              },
+              maxResults: {
+                type: "number",
+                description: "Maximum number of chunks to retrieve (default: 5).",
               },
             },
             required: ["query"],
@@ -360,6 +380,58 @@ async function handleJsonRpc(body, env) {
       }
     }
 
+    // ai_search_search: retrieval via AI Search, no generation
+    if (toolName === "ai_search_search") {
+      const query = args.query;
+      const maxResults = args.maxResults ?? 5;
+
+      if (!query) {
+        return jsonRpcResult(
+          id,
+          {
+            content: [
+              {
+                type: "text",
+                text: "Error: missing 'query' argument",
+              },
+            ],
+          },
+          200
+        );
+      }
+
+      try {
+        const result = await aiSearchRetrieve(env, query, maxResults);
+
+        return jsonRpcResult(
+          id,
+          {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(result, null, 2),
+              },
+            ],
+          },
+          200
+        );
+      } catch (e) {
+        console.error("ai_search_search error", e);
+        return jsonRpcResult(
+          id,
+          {
+            content: [
+              {
+                type: "text",
+                text: `Error running ai_search_search: ${e.message}`,
+              },
+            ],
+          },
+          200
+        );
+      }
+    }
+
     return jsonRpcError(id, -32601, `Unknown tool: ${toolName}`, 200);
   }
 
@@ -371,20 +443,20 @@ async function handleJsonRpc(body, env) {
 // Vector search helper
 // ---------------
 
-//**
-//  * Perform semantic search over the Cloudflare Vectorize index.
-//  *
-//  * Assumptions:
-//  * - VECTOR_INDEX is the Vectorize index created by AI Search "billowing-sunset-5bac".
-//  * - AI is a Workers AI binding.
-//  * - AI Search used @cf/qwen/qwen3-embedding-0.6b for ingestion,
-//  *   so we use the same model for query embeddings.
-//  *
-//  * @param {any} env - Worker environment (with VECTOR_INDEX and AI bindings).
-//  * @param {string} query - Natural language query.
-//  * @param {number} topK - Number of results to return.
-//  * @returns {Promise<Array>} Matches with id, score, and metadata.
-//  */
+/**
+ * Perform semantic search over the Cloudflare Vectorize index.
+ *
+ * Assumptions:
+ * - VECTOR_INDEX is provided via a [[vectorize]] binding in wrangler.toml.
+ * - AI is a Workers AI binding.
+ * - AI Search used @cf/qwen/qwen3-embedding-0.6b for ingestion,
+ *   so we use the same model for query embeddings.
+ *
+ * @param {any} env - Worker environment (with VECTOR_INDEX and AI bindings).
+ * @param {string} query - Natural language query.
+ * @param {number} topK - Number of results to return.
+ * @returns {Promise<Array>} Matches with id, score, and metadata.
+ */
 async function searchVectors(env, query, topK) {
   if (!env.VECTOR_INDEX) {
     throw new Error(
@@ -427,13 +499,62 @@ async function searchVectors(env, query, topK) {
   return matches.map((m) => ({
     id: m.id,
     score: m.score,
-    // These depend on what AI Search stored into Vectorize metadata
+    // These depend on what was stored into Vectorize metadata
     source: m.metadata?.source,
     text: m.metadata?.text,
     metadata: m.metadata || {},
   }));
 }
 
+// ---------------
+// AI Search retrieval helper (no generation)
+// ---------------
+
+/**
+ * Use Cloudflare AI Search (formerly AutoRAG) to retrieve relevant chunks
+ * from your AI Search instance.
+ *
+ * This does retrieval only (no model-generated answer).
+ * The MCP client/agent will read these chunks and generate the answer.
+ *
+ * @param {any} env - Worker environment with AI binding.
+ * @param {string} query - Natural language query.
+ * @param {number} maxResults - Maximum number of chunks to return.
+ */
+async function aiSearchRetrieve(env, query, maxResults = 5) {
+  if (!env.AI) {
+    throw new Error(
+      "AI binding is missing. Add an [ai] binding in wrangler.toml."
+    );
+  }
+
+  // Call your AI Search instance by name.
+  // This does NOT hardcode the Vectorize index, it just uses the AI Search logical name.
+  const searchResult = await env.AI.autorag("billowing-sunset-5bac").search({
+    query,
+    max_num_results: maxResults,
+  });
+
+  // Normalize searchResult.data into a compact structure for the MCP client.
+  const chunks = (searchResult.data || []).map((item) => {
+    const text = (item.content || [])
+      .map((c) => c.text || "")
+      .join("\n\n")
+      .trim();
+
+    return {
+      filename: item.filename || null,
+      score: item.score,
+      metadata: item.metadata || {},
+      text,
+    };
+  });
+
+  return {
+    query,
+    chunks,
+  };
+}
 
 // ---------------
 // Response helpers
