@@ -1,0 +1,14 @@
+name = "mcp-worker"
+main = "src/worker.js"
+compatibility_date = "2025-11-01"
+
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "qa-gencloud-bucket"
+
+[[vectorize]]
+binding = "VECTOR_INDEX"
+index_name = "ai-search-billowing-sunset-5bac"
+
+[ai]
+binding = "AI"
