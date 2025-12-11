@@ -231,6 +231,32 @@ async function handleJsonRpc(body, env) {
             additionalProperties: false,
           },
         },
+        {
+          name: "ai_search_generate",
+          description:
+            "Use Cloudflare AI Search to retrieve relevant chunks and generate a natural-language answer using the configured generation model.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              query: {
+                type: "string",
+                description: "User question to answer using your AI Search knowledge base.",
+              },
+              maxResults: {
+                type: "number",
+                description:
+                  "Maximum number of chunks to retrieve (maps to max_num_results, default: 5).",
+              },
+              model: {
+                type: "string",
+                description:
+                  "Optional override for the generation model. If omitted, uses the AI Search instance's configured generation model.",
+              },
+            },
+            required: ["query"],
+            additionalProperties: false,
+          },
+        },
       ],
     };
 
@@ -432,6 +458,92 @@ async function handleJsonRpc(body, env) {
       }
     }
 
+    // ai_search_generate: retrieval + generation via AI Search
+    if (toolName === "ai_search_generate") {
+      const query = args.query;
+      const maxResults = args.maxResults;
+      const model = args.model;
+
+      if (!query) {
+        return jsonRpcResult(
+          id,
+          {
+            content: [
+              {
+                type: "text",
+                text: "Error: missing 'query' argument",
+              },
+            ],
+          },
+          200
+        );
+      }
+
+      if (!env.AI) {
+        return jsonRpcResult(
+          id,
+          {
+            content: [
+              {
+                type: "text",
+                text: "Error: AI binding is missing. Add an [ai] binding in wrangler.toml.",
+              },
+            ],
+          },
+          200
+        );
+      }
+
+      try {
+        const payload = { query };
+
+        if (typeof maxResults === "number") {
+          payload.max_num_results = maxResults;
+        }
+
+        if (typeof model === "string" && model.length > 0) {
+          payload.model = model;
+        }
+
+        const result = await env.AI.autorag("ai-search-lamagent-ai-search").aiSearch(
+          payload
+        );
+
+        const responsePayload = {
+          query,
+          answer: result?.response ?? null,
+          raw: result,
+        };
+
+        return jsonRpcResult(
+          id,
+          {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(responsePayload, null, 2),
+              },
+            ],
+          },
+          200
+        );
+      } catch (e) {
+        console.error("ai_search_generate error", e);
+        return jsonRpcResult(
+          id,
+          {
+            content: [
+              {
+                type: "text",
+                text: `Error running ai_search_generate: ${e.message}`,
+              },
+            ],
+          },
+          200
+        );
+      }
+    }
+
     return jsonRpcError(id, -32601, `Unknown tool: ${toolName}`, 200);
   }
 
@@ -530,7 +642,7 @@ async function aiSearchRetrieve(env, query, maxResults = 5) {
 
   // Call your AI Search instance by name.
   // This does NOT hardcode the Vectorize index, it just uses the AI Search logical name.
-  const searchResult = await env.AI.autorag("billowing-sunset-5bac").search({
+  const searchResult = await env.AI.autorag("ai-search-lamagent-ai-search").search({
     query,
     max_num_results: maxResults,
   });

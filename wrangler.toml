@@ -4,11 +4,11 @@ compatibility_date = "2025-11-01"
 
 [[r2_buckets]]
 binding = "R2"
-bucket_name = "qa-gencloud-bucket"
+bucket_name = "lamagent"
 
 [[vectorize]]
 binding = "VECTOR_INDEX"
-index_name = "ai-search-billowing-sunset-5bac"
+index_name = "ai-search-lamagent-ai-search"
 
 [ai]
 binding = "AI"
